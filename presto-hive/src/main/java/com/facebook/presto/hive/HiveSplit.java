@@ -15,7 +15,9 @@ package com.facebook.presto.hive;
 
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.HostAddress;
+import com.facebook.presto.spi.Subfield;
 import com.facebook.presto.spi.predicate.TupleDomain;
+import com.facebook.presto.spi.relation.RowExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
@@ -45,11 +47,15 @@ public class HiveSplit
     private final String database;
     private final String table;
     private final String partitionName;
-    private final TupleDomain<HiveColumnHandle> effectivePredicate;
-    private final OptionalInt bucketNumber;
+    private final TupleDomain<Subfield> domainPredicate;
+    private final RowExpression remainingPredicate;
+    private final Map<String, HiveColumnHandle> predicateColumns;
+    private final OptionalInt readBucketNumber;
+    private final OptionalInt tableBucketNumber;
     private final boolean forceLocalScheduling;
     private final Map<Integer, HiveType> columnCoercions; // key: hiveColumnIndex
     private final Optional<BucketConversion> bucketConversion;
+    private final boolean s3SelectPushdownEnabled;
 
     @JsonCreator
     public HiveSplit(
@@ -63,11 +69,15 @@ public class HiveSplit
             @JsonProperty("schema") Properties schema,
             @JsonProperty("partitionKeys") List<HivePartitionKey> partitionKeys,
             @JsonProperty("addresses") List<HostAddress> addresses,
-            @JsonProperty("bucketNumber") OptionalInt bucketNumber,
+            @JsonProperty("readBucketNumber") OptionalInt readBucketNumber,
+            @JsonProperty("tableBucketNumber") OptionalInt tableBucketNumber,
             @JsonProperty("forceLocalScheduling") boolean forceLocalScheduling,
-            @JsonProperty("effectivePredicate") TupleDomain<HiveColumnHandle> effectivePredicate,
+            @JsonProperty("domainPredicate") TupleDomain<Subfield> domainPredicate,
+            @JsonProperty("remainingPredicate") RowExpression remainingPredicate,
+            @JsonProperty("predicateColumns") Map<String, HiveColumnHandle> predicateColumns,
             @JsonProperty("columnCoercions") Map<Integer, HiveType> columnCoercions,
-            @JsonProperty("bucketConversion") Optional<BucketConversion> bucketConversion)
+            @JsonProperty("bucketConversion") Optional<BucketConversion> bucketConversion,
+            @JsonProperty("s3SelectPushdownEnabled") boolean s3SelectPushdownEnabled)
     {
         checkArgument(start >= 0, "start must be positive");
         checkArgument(length >= 0, "length must be positive");
@@ -79,10 +89,13 @@ public class HiveSplit
         requireNonNull(schema, "schema is null");
         requireNonNull(partitionKeys, "partitionKeys is null");
         requireNonNull(addresses, "addresses is null");
-        requireNonNull(bucketNumber, "bucketNumber is null");
-        requireNonNull(effectivePredicate, "tupleDomain is null");
+        requireNonNull(readBucketNumber, "readBucketNumber is null");
+        requireNonNull(tableBucketNumber, "tableBucketNumber is null");
         requireNonNull(columnCoercions, "columnCoercions is null");
         requireNonNull(bucketConversion, "bucketConversion is null");
+        requireNonNull(domainPredicate, "domainPredicate is null");
+        requireNonNull(remainingPredicate, "remainingPredicate is null");
+        requireNonNull(predicateColumns, "predicateColumns is null");
 
         this.database = database;
         this.table = table;
@@ -94,11 +107,15 @@ public class HiveSplit
         this.schema = schema;
         this.partitionKeys = ImmutableList.copyOf(partitionKeys);
         this.addresses = ImmutableList.copyOf(addresses);
-        this.bucketNumber = bucketNumber;
+        this.readBucketNumber = readBucketNumber;
+        this.tableBucketNumber = tableBucketNumber;
         this.forceLocalScheduling = forceLocalScheduling;
-        this.effectivePredicate = effectivePredicate;
+        this.domainPredicate = domainPredicate;
+        this.remainingPredicate = remainingPredicate;
+        this.predicateColumns = predicateColumns;
         this.columnCoercions = columnCoercions;
         this.bucketConversion = bucketConversion;
+        this.s3SelectPushdownEnabled = s3SelectPushdownEnabled;
     }
 
     @JsonProperty
@@ -163,15 +180,33 @@ public class HiveSplit
     }
 
     @JsonProperty
-    public OptionalInt getBucketNumber()
+    public OptionalInt getReadBucketNumber()
     {
-        return bucketNumber;
+        return readBucketNumber;
     }
 
     @JsonProperty
-    public TupleDomain<HiveColumnHandle> getEffectivePredicate()
+    public OptionalInt getTableBucketNumber()
     {
-        return effectivePredicate;
+        return tableBucketNumber;
+    }
+
+    @JsonProperty
+    public TupleDomain<Subfield> getDomainPredicate()
+    {
+        return domainPredicate;
+    }
+
+    @JsonProperty
+    public RowExpression getRemainingPredicate()
+    {
+        return remainingPredicate;
+    }
+
+    @JsonProperty
+    public Map<String, HiveColumnHandle> getPredicateColumns()
+    {
+        return predicateColumns;
     }
 
     @JsonProperty
@@ -198,6 +233,12 @@ public class HiveSplit
         return !forceLocalScheduling;
     }
 
+    @JsonProperty
+    public boolean isS3SelectPushdownEnabled()
+    {
+        return s3SelectPushdownEnabled;
+    }
+
     @Override
     public Object getInfo()
     {
@@ -211,6 +252,7 @@ public class HiveSplit
                 .put("table", table)
                 .put("forceLocalScheduling", forceLocalScheduling)
                 .put("partitionName", partitionName)
+                .put("s3SelectPushdownEnabled", s3SelectPushdownEnabled)
                 .build();
     }
 
@@ -222,7 +264,9 @@ public class HiveSplit
                 .addValue(start)
                 .addValue(length)
                 .addValue(fileSize)
-                .addValue(effectivePredicate)
+                .addValue(domainPredicate)
+                .addValue(remainingPredicate)
+                .addValue(s3SelectPushdownEnabled)
                 .toString();
     }
 
@@ -231,7 +275,7 @@ public class HiveSplit
         private final int tableBucketCount;
         private final int partitionBucketCount;
         private final List<HiveColumnHandle> bucketColumnNames;
-        // bucketNumber is needed, but can be found in bucketNumber field of HiveSplit.
+        // tableBucketNumber is needed, but can be found in tableBucketNumber field of HiveSplit.
 
         @JsonCreator
         public BucketConversion(

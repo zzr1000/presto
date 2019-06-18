@@ -102,7 +102,7 @@ public class GlobalSystemConnector
             }
 
             @Override
-            public List<SchemaTableName> listTables(ConnectorSession session, String schemaNameOrNull)
+            public List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName)
             {
                 return ImmutableList.of();
             }
@@ -130,7 +130,7 @@ public class GlobalSystemConnector
     @Override
     public ConnectorSplitManager getSplitManager()
     {
-        return (transactionHandle, session, layout, splitSchedulingStrategy) -> {
+        return (transactionHandle, session, layout, splitSchedulingContext) -> {
             throw new UnsupportedOperationException();
         };
     }

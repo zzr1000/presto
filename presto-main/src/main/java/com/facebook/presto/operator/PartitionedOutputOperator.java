@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.buffer.OutputBuffer;
 import com.facebook.presto.execution.buffer.PagesSerde;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
@@ -22,9 +23,9 @@ import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.predicate.NullableValue;
+import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.spi.relation.ConstantExpression;
 import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.facebook.presto.util.Mergeable;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -53,7 +54,7 @@ public class PartitionedOutputOperator
     {
         private final PartitionFunction partitionFunction;
         private final List<Integer> partitionChannels;
-        private final List<Optional<NullableValue>> partitionConstants;
+        private final List<Optional<ConstantExpression>> partitionConstants;
         private final OutputBuffer outputBuffer;
         private final boolean replicatesAnyRow;
         private final OptionalInt nullChannel;
@@ -62,7 +63,7 @@ public class PartitionedOutputOperator
         public PartitionedOutputFactory(
                 PartitionFunction partitionFunction,
                 List<Integer> partitionChannels,
-                List<Optional<NullableValue>> partitionConstants,
+                List<Optional<ConstantExpression>> partitionConstants,
                 boolean replicatesAnyRow,
                 OptionalInt nullChannel,
                 OutputBuffer outputBuffer,
@@ -110,7 +111,7 @@ public class PartitionedOutputOperator
         private final Function<Page, Page> pagePreprocessor;
         private final PartitionFunction partitionFunction;
         private final List<Integer> partitionChannels;
-        private final List<Optional<NullableValue>> partitionConstants;
+        private final List<Optional<ConstantExpression>> partitionConstants;
         private final boolean replicatesAnyRow;
         private final OptionalInt nullChannel;
         private final OutputBuffer outputBuffer;
@@ -124,7 +125,7 @@ public class PartitionedOutputOperator
                 Function<Page, Page> pagePreprocessor,
                 PartitionFunction partitionFunction,
                 List<Integer> partitionChannels,
-                List<Optional<NullableValue>> partitionConstants,
+                List<Optional<ConstantExpression>> partitionConstants,
                 boolean replicatesAnyRow,
                 OptionalInt nullChannel,
                 OutputBuffer outputBuffer,
@@ -200,7 +201,7 @@ public class PartitionedOutputOperator
             Function<Page, Page> pagePreprocessor,
             PartitionFunction partitionFunction,
             List<Integer> partitionChannels,
-            List<Optional<NullableValue>> partitionConstants,
+            List<Optional<ConstantExpression>> partitionConstants,
             boolean replicatesAnyRow,
             OptionalInt nullChannel,
             OutputBuffer outputBuffer,
@@ -218,10 +219,11 @@ public class PartitionedOutputOperator
                 outputBuffer,
                 serdeFactory,
                 sourceTypes,
-                maxMemory);
+                maxMemory,
+                operatorContext.getDriverContext().getLifespan());
 
         operatorContext.setInfoSupplier(this::getInfo);
-        this.systemMemoryContext = operatorContext.newLocalSystemMemoryContext();
+        this.systemMemoryContext = operatorContext.newLocalSystemMemoryContext(PartitionedOutputOperator.class.getSimpleName());
         this.partitionsInitialRetainedSize = this.partitionFunction.getRetainedSizeInBytes();
         this.systemMemoryContext.setBytes(partitionsInitialRetainedSize);
     }
@@ -275,7 +277,7 @@ public class PartitionedOutputOperator
         page = pagePreprocessor.apply(page);
         partitionFunction.partitionPage(page);
 
-        operatorContext.recordGeneratedOutput(page.getSizeInBytes(), page.getPositionCount());
+        operatorContext.recordOutput(page.getSizeInBytes(), page.getPositionCount());
 
         // We use getSizeInBytes() here instead of getRetainedSizeInBytes() for an approximation of
         // the amount of memory used by the pageBuilders, because calculating the retained
@@ -300,6 +302,7 @@ public class PartitionedOutputOperator
         private final List<Integer> partitionChannels;
         private final List<Optional<Block>> partitionConstants;
         private final PagesSerde serde;
+        private final Lifespan lifespan;
         private final PageBuilder[] pageBuilders;
         private final boolean replicatesAnyRow;
         private final OptionalInt nullChannel; // when present, send the position to every partition if this channel is null.
@@ -310,24 +313,26 @@ public class PartitionedOutputOperator
         public PagePartitioner(
                 PartitionFunction partitionFunction,
                 List<Integer> partitionChannels,
-                List<Optional<NullableValue>> partitionConstants,
+                List<Optional<ConstantExpression>> partitionConstants,
                 boolean replicatesAnyRow,
                 OptionalInt nullChannel,
                 OutputBuffer outputBuffer,
                 PagesSerdeFactory serdeFactory,
                 List<Type> sourceTypes,
-                DataSize maxMemory)
+                DataSize maxMemory,
+                Lifespan lifespan)
         {
             this.partitionFunction = requireNonNull(partitionFunction, "partitionFunction is null");
             this.partitionChannels = requireNonNull(partitionChannels, "partitionChannels is null");
             this.partitionConstants = requireNonNull(partitionConstants, "partitionConstants is null").stream()
-                    .map(constant -> constant.map(NullableValue::asBlock))
+                    .map(constant -> constant.map(ConstantExpression::getValueBlock))
                     .collect(toImmutableList());
             this.replicatesAnyRow = replicatesAnyRow;
             this.nullChannel = requireNonNull(nullChannel, "nullChannel is null");
             this.outputBuffer = requireNonNull(outputBuffer, "outputBuffer is null");
             this.sourceTypes = requireNonNull(sourceTypes, "sourceTypes is null");
             this.serde = requireNonNull(serdeFactory, "serdeFactory is null").createPagesSerde();
+            this.lifespan = requireNonNull(lifespan, "lifespan is null");
 
             int partitionCount = partitionFunction.getPartitionCount();
             int pageSize = min(DEFAULT_MAX_PAGE_SIZE_IN_BYTES, ((int) maxMemory.toBytes()) / partitionCount);
@@ -432,7 +437,7 @@ public class PartitionedOutputOperator
                             .map(serde::serialize)
                             .collect(toImmutableList());
 
-                    outputBuffer.enqueue(partition, serializedPages);
+                    outputBuffer.enqueue(lifespan, partition, serializedPages);
                     pagesAdded.incrementAndGet();
                     rowsAdded.addAndGet(pagePartition.getPositionCount());
                 }

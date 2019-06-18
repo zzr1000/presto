@@ -105,6 +105,44 @@ General Aggregate Functions
 
     Returns ``n`` smallest values of all input values of ``x``.
 
+.. function:: reduce_agg(inputValue T, initialState S, inputFunction(S, T, S), combineFunction(S, S, S)) -> S
+
+    Reduces all input values into a single value. ```inputFunction`` will be invoked
+    for each input value. In addition to taking the input value, ``inputFunction``
+    takes the current state, initially ``initialState``, and returns the new state.
+    ``combineFunction`` will be invoked to combine two states into a new state.
+    The final state is returned::
+
+        SELECT id, reduce_agg(value, 0, (a, b) -> a + b, (a, b) -> a + b)
+        FROM (
+            VALUES
+                (1, 2)
+                (1, 3),
+                (1, 4),
+                (2, 20),
+                (2, 30),
+                (2, 40)
+        ) AS t(id, value)
+        GROUP BY id;
+        -- (1, 9)
+        -- (2, 90)
+
+        SELECT id, reduce_agg(value, 1, (a, b) -> a * b, (a, b) -> a * b)
+        FROM (
+            VALUES
+                (1, 2),
+                (1, 3),
+                (1, 4),
+                (2, 20),
+                (2, 30),
+                (2, 40)
+        ) AS t(id, value)
+        GROUP BY id;
+        -- (1, 24)
+        -- (2, 24000)
+
+    The state type must be a boolean, integer, floating-point, or date/time/interval.
+
 .. function:: sum(x) -> [same as input]
 
     Returns the sum of all input values.
@@ -123,20 +161,20 @@ Bitwise Aggregate Functions
 Map Aggregate Functions
 -----------------------
 
-.. function:: histogram(x) -> map<K,bigint>
+.. function:: histogram(x) -> map(K,bigint)
 
     Returns a map containing the count of the number of times each input value occurs.
 
-.. function:: map_agg(key, value) -> map<K,V>
+.. function:: map_agg(key, value) -> map(K,V)
 
     Returns a map created from the input ``key`` / ``value`` pairs.
 
-.. function:: map_union(x<K,V>) -> map<K,V>
+.. function:: map_union(x(K,V)) -> map(K,V)
 
    Returns the union of all the input maps. If a key is found in multiple
    input maps, that key's value in the resulting map comes from an arbitrary input map.
 
-.. function:: multimap_agg(key, value) -> map<K,array<V>>
+.. function:: multimap_agg(key, value) -> map(K,array(V))
 
     Returns a multimap created from the input ``key`` / ``value`` pairs.
     Each key can be associated with multiple values.
@@ -206,11 +244,42 @@ Approximate Aggregate Functions
     Each element of the array must be between zero and one, and the array must
     be constant for all input rows.
 
+.. function:: approx_set(x) -> HyperLogLog
+    :noindex:
+
+    See :doc:`hyperloglog`.
+
+.. function:: merge(x) -> HyperLogLog
+    :noindex:
+
+    See :doc:`hyperloglog`.
+
+.. function:: merge(qdigest(T)) -> qdigest(T)
+    :noindex:
+
+    See :doc:`qdigest`.
+
+.. function:: qdigest_agg(x) -> qdigest<[same as x]>
+    :noindex:
+
+    See :doc:`qdigest`.
+
+.. function:: qdigest_agg(x, w) -> qdigest<[same as x]>
+    :noindex:
+
+    See :doc:`qdigest`.
+
+.. function:: qdigest_agg(x, w, accuracy) -> qdigest<[same as x]>
+    :noindex:
+
+    See :doc:`qdigest`.
+
 .. function:: numeric_histogram(buckets, value, weight) -> map<double, double>
 
     Computes an approximate histogram with up to ``buckets`` number of buckets
-    for all ``value``\ s with a per-item weight of ``weight``. The algorithm
-    is based loosely on:
+    for all ``value``\ s with a per-item weight of ``weight``.  The keys of the
+    returned map are roughly the center of the bin, and the entry is the total
+    weight of the bin.  The algorithm is based loosely on:
 
     .. code-block:: none
 
@@ -224,6 +293,7 @@ Approximate Aggregate Functions
     Computes an approximate histogram with up to ``buckets`` number of buckets
     for all ``value``\ s. This function is equivalent to the variant of
     :func:`numeric_histogram` that takes a ``weight``, with a per-item weight of ``1``.
+    In this case, the total weight in the returned map is the count of items in the bin.
 
 Statistical Aggregate Functions
 -------------------------------
@@ -240,6 +310,19 @@ Statistical Aggregate Functions
 
     Returns the sample covariance of input values.
 
+.. function:: entropy(c) -> double
+
+    Returns the log-2 entropy of count input-values.
+
+    .. code-block:: none
+
+        entropy(c) = \sum_i [ c_i / \sum_j [c_j] \log_2(\sum_j [c_j] / c_i) ]
+
+    ``c`` must be a ``bigint`` column of non-negative values.
+
+    The function ignores any ``NULL`` count. If the sum of non-``NULL`` counts is 0,
+    it returns 0.
+
 .. function:: kurtosis(x) -> double
 
     Returns the excess kurtosis of all input values. Unbiased estimate using
@@ -248,6 +331,76 @@ Statistical Aggregate Functions
     .. code-block:: none
 
         kurtosis(x) = n(n+1)/((n-1)(n-2)(n-3))sum[(x_i-mean)^4]/stddev(x)^4-3(n-1)^2/((n-2)(n-3))
+
+.. function:: classification_miss_rate(buckets, y, x, weight) -> array<double>
+
+    Computes the miss-rate part of the receiver operator curve with up to ``buckets`` number of buckets. Returns
+    an array of miss-rate values. ``y`` should be a boolean outcome value; ``x`` should be predictions, each
+    between 0 and 1; ``weight`` should be non-negative values, indicating the weight of the instance.
+
+    To get an ROC map, use this in conjunction with :func:`classification_recall`:
+
+    .. code-block:: none
+
+        MAP(classification_recall(200, outcome, prediction), classification_miss_rate(200, outcome, prediction))
+
+.. function:: classification_precision(buckets, y, x) -> array<double>
+
+    This function is equivalent to the variant of
+    :func:`classification_precision` that takes a ``weight``, with a per-item weight of ``1``.
+
+.. function:: classification_precision(buckets, y, x, weight) -> array<double>
+
+    Computes the precision part of the precision-recall curve with up to ``buckets`` number of buckets. Returns
+    an array of precision values. ``y`` should be a boolean outcome value; ``x`` should be predictions, each
+    between 0 and 1; ``weight`` should be non-negative values, indicating the weight of the instance.
+
+    To get a map of recall to precision, use this in conjunction with :func:`classification_recall`:
+
+    .. code-block:: none
+
+        MAP(classification_recall(200, outcome, prediction), classification_precision(200, outcome, prediction))
+
+.. function:: classification_precision(buckets, y, x) -> array<double>
+
+    This function is equivalent to the variant of
+    :func:`classification_precision` that takes a ``weight``, with a per-item weight of ``1``.
+
+.. function:: classification_recall(buckets, y, x, weight) -> array<double>
+
+    Computes the recall part of the precision-recall curve or the receiver operator charateristic curve
+    with up to ``buckets`` number of buckets. Returns an array of recall values.
+    ``y`` should be a boolean outcome value; ``x`` should be predictions, each
+    between 0 and 1; ``weight`` should be non-negative values, indicating the weight of the instance.
+
+    To get a map of recall to precision, use this in conjunction with :func:`classification_recall`:
+
+    .. code-block:: none
+
+        MAP(classification_recall(200, outcome, prediction), classification_precision(200, outcome, prediction))
+
+.. function:: classification_recall(buckets, y, x) -> array<double>
+
+    This function is equivalent to the variant of
+    :func:`classification_recall` that takes a ``weight``, with a per-item weight of ``1``.
+
+.. function:: classification_thresholds(buckets, y, x) -> array<double>
+
+    Computes the thresholds part of the precision-recall curve with up to ``buckets`` number of buckets. Returns
+    an array of thresholds. ``y`` should be a boolean outcome value; ``x`` should be predictions, each
+    between 0 and 1.
+
+    To get a map of thresholds to precision, use this in conjunction with :func:`classification_precision`:
+
+    .. code-block:: none
+
+        MAP(classification_thresholds(200, outcome, prediction), classification_precision(200, outcome, prediction))
+
+    To get a map of thresholds to recall, use this in conjunction with :func:`classification_recall`:
+
+    .. code-block:: none
+
+        MAP(classification_thresholds(200, outcome, prediction), classification_recall(200, outcome, prediction))
 
 .. function:: regr_intercept(y, x) -> double
 

@@ -13,20 +13,20 @@
  */
 package com.facebook.presto.memory;
 
-import com.facebook.presto.ScheduledSplit;
-import com.facebook.presto.TaskSource;
-import com.facebook.presto.connector.ConnectorId;
+import com.facebook.presto.execution.ScheduledSplit;
+import com.facebook.presto.execution.TaskSource;
 import com.facebook.presto.metadata.Split;
 import com.facebook.presto.operator.Driver;
 import com.facebook.presto.operator.DriverContext;
 import com.facebook.presto.operator.TableScanOperator;
 import com.facebook.presto.operator.TaskContext;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.FixedPageSource;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.QueryId;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.PageConsumerOperator;
 import com.facebook.presto.testing.TestingTaskContext;
@@ -78,7 +78,7 @@ public class TestSystemMemoryBlocking
                 .build();
         memoryPool = taskContext.getQueryContext().getMemoryPool();
         driverContext = taskContext
-                .addPipelineContext(0, true, true)
+                .addPipelineContext(0, true, true, false)
                 .addDriverContext();
     }
 
@@ -127,7 +127,7 @@ public class TestSystemMemoryBlocking
         }
 
         // free up some memory
-        memoryPool.free(QUERY_ID, memoryPool.getReservedBytes());
+        memoryPool.free(QUERY_ID, "test", memoryPool.getReservedBytes());
 
         // the operator should be unblocked
         assertTrue(source.getOperatorContext().isWaitingForMemory().isDone());

@@ -21,6 +21,7 @@ import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordPageSource;
+import com.facebook.presto.spi.Subfield;
 import com.facebook.presto.spi.connector.ConnectorPageSourceProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.facebook.presto.spi.predicate.TupleDomain;
@@ -90,24 +91,29 @@ public class HivePageSourceProvider
         HiveSplit hiveSplit = (HiveSplit) split;
         Path path = new Path(hiveSplit.getPath());
 
+        Configuration configuration = hdfsEnvironment.getConfiguration(new HdfsContext(session, hiveSplit.getDatabase(), hiveSplit.getTable()), path);
+
         Optional<ConnectorPageSource> pageSource = createHivePageSource(
                 cursorProviders,
                 pageSourceFactories,
-                hdfsEnvironment.getConfiguration(new HdfsContext(session, hiveSplit.getDatabase(), hiveSplit.getTable()), path),
+                configuration,
                 session,
                 path,
-                hiveSplit.getBucketNumber(),
+                hiveSplit.getTableBucketNumber(),
                 hiveSplit.getStart(),
                 hiveSplit.getLength(),
                 hiveSplit.getFileSize(),
                 hiveSplit.getSchema(),
-                hiveSplit.getEffectivePredicate(),
+                hiveSplit.getDomainPredicate()
+                        .transform(Subfield::getRootName)
+                        .transform(hiveSplit.getPredicateColumns()::get),
                 hiveColumns,
                 hiveSplit.getPartitionKeys(),
                 hiveStorageTimeZone,
                 typeManager,
                 hiveSplit.getColumnCoercions(),
-                hiveSplit.getBucketConversion());
+                hiveSplit.getBucketConversion(),
+                hiveSplit.isS3SelectPushdownEnabled());
         if (pageSource.isPresent()) {
             return pageSource.get();
         }
@@ -120,7 +126,7 @@ public class HivePageSourceProvider
             Configuration configuration,
             ConnectorSession session,
             Path path,
-            OptionalInt bucketNumber,
+            OptionalInt tableBucketNumber,
             long start,
             long length,
             long fileSize,
@@ -131,7 +137,8 @@ public class HivePageSourceProvider
             DateTimeZone hiveStorageTimeZone,
             TypeManager typeManager,
             Map<Integer, HiveType> columnCoercions,
-            Optional<BucketConversion> bucketConversion)
+            Optional<BucketConversion> bucketConversion,
+            boolean s3SelectPushdownEnabled)
     {
         List<ColumnMapping> columnMappings = ColumnMapping.buildColumnMappings(
                 partitionKeys,
@@ -139,7 +146,7 @@ public class HivePageSourceProvider
                 bucketConversion.map(BucketConversion::getBucketColumnHandles).orElse(ImmutableList.of()),
                 columnCoercions,
                 path,
-                bucketNumber);
+                tableBucketNumber);
         List<ColumnMapping> regularAndInterimColumnMappings = ColumnMapping.extractRegularAndInterimColumnMappings(columnMappings);
 
         Optional<BucketAdaptation> bucketAdaptation = bucketConversion.map(conversion -> {
@@ -150,7 +157,7 @@ public class HivePageSourceProvider
             List<HiveType> bucketColumnHiveTypes = conversion.getBucketColumnHandles().stream()
                     .map(columnHandle -> hiveIndexToBlockIndex.get(columnHandle.getHiveColumnIndex()).getHiveColumnHandle().getHiveType())
                     .collect(toImmutableList());
-            return new BucketAdaptation(bucketColumnIndices, bucketColumnHiveTypes, conversion.getTableBucketCount(), conversion.getPartitionBucketCount(), bucketNumber.getAsInt());
+            return new BucketAdaptation(bucketColumnIndices, bucketColumnHiveTypes, conversion.getTableBucketCount(), conversion.getPartitionBucketCount(), tableBucketNumber.getAsInt());
         });
 
         for (HivePageSourceFactory pageSourceFactory : pageSourceFactories) {
@@ -191,7 +198,8 @@ public class HivePageSourceProvider
                     toColumnHandles(regularAndInterimColumnMappings, doCoercion),
                     effectivePredicate,
                     hiveStorageTimeZone,
-                    typeManager);
+                    typeManager,
+                    s3SelectPushdownEnabled);
 
             if (cursor.isPresent()) {
                 RecordCursor delegate = cursor.get();
@@ -360,7 +368,8 @@ public class HivePageSourceProvider
                                 columnMapping.getCoercionFrom().get().getTypeSignature(),
                                 columnHandle.getHiveColumnIndex(),
                                 columnHandle.getColumnType(),
-                                Optional.empty());
+                                Optional.empty(),
+                                columnHandle.getRequiredSubfields());
                     })
                     .collect(toList());
         }

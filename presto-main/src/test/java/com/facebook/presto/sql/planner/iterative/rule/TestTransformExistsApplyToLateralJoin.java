@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.sql.planner.iterative.rule;
 
+import com.facebook.presto.spi.plan.FilterNode;
 import com.facebook.presto.sql.planner.assertions.PlanMatchPattern;
 import com.facebook.presto.sql.planner.iterative.rule.test.BaseRuleTest;
 import com.facebook.presto.sql.planner.plan.Assignments;
-import com.facebook.presto.sql.planner.plan.FilterNode;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
@@ -37,26 +37,26 @@ public class TestTransformExistsApplyToLateralJoin
     @Test
     public void testDoesNotFire()
     {
-        tester().assertThat(new TransformExistsApplyToLateralNode(tester().getMetadata().getFunctionRegistry()))
-                .on(p -> p.values(p.symbol("a")))
+        tester().assertThat(new TransformExistsApplyToLateralNode(tester().getMetadata().getFunctionManager()))
+                .on(p -> p.values(p.variable("a")))
                 .doesNotFire();
 
-        tester().assertThat(new TransformExistsApplyToLateralNode(tester().getMetadata().getFunctionRegistry()))
+        tester().assertThat(new TransformExistsApplyToLateralNode(tester().getMetadata().getFunctionManager()))
                 .on(p ->
                         p.lateral(
-                                ImmutableList.of(p.symbol("a")),
-                                p.values(p.symbol("a")),
-                                p.values(p.symbol("a"))))
+                                ImmutableList.of(p.variable(p.symbol("a"))),
+                                p.values(p.variable("a")),
+                                p.values(p.variable("a"))))
                 .doesNotFire();
     }
 
     @Test
     public void testRewrite()
     {
-        tester().assertThat(new TransformExistsApplyToLateralNode(tester().getMetadata().getFunctionRegistry()))
+        tester().assertThat(new TransformExistsApplyToLateralNode(tester().getMetadata().getFunctionManager()))
                 .on(p ->
                         p.apply(
-                                Assignments.of(p.symbol("b", BOOLEAN), expression("EXISTS(SELECT TRUE)")),
+                                Assignments.of(p.variable("b", BOOLEAN), expression("EXISTS(SELECT TRUE)")),
                                 ImmutableList.of(),
                                 p.values(),
                                 p.values()))
@@ -72,16 +72,16 @@ public class TestTransformExistsApplyToLateralJoin
     @Test
     public void testRewritesToLimit()
     {
-        tester().assertThat(new TransformExistsApplyToLateralNode(tester().getMetadata().getFunctionRegistry()))
+        tester().assertThat(new TransformExistsApplyToLateralNode(tester().getMetadata().getFunctionManager()))
                 .on(p ->
                         p.apply(
-                                Assignments.of(p.symbol("b", BOOLEAN), expression("EXISTS(SELECT TRUE)")),
-                                ImmutableList.of(p.symbol("corr")),
-                                p.values(p.symbol("corr")),
+                                Assignments.of(p.variable("b", BOOLEAN), expression("EXISTS(SELECT TRUE)")),
+                                ImmutableList.of(p.variable(p.symbol("corr"))),
+                                p.values(p.variable("corr")),
                                 p.project(Assignments.of(),
                                         p.filter(
                                                 expression("corr = column"),
-                                                p.values(p.symbol("column"))))))
+                                                p.values(p.variable("column"))))))
                 .matches(
                         project(ImmutableMap.of("b", PlanMatchPattern.expression("COALESCE(subquerytrue, false)")),
                                 lateral(

@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.sql.planner;
 
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.tree.ComparisonExpression;
-import com.facebook.presto.sql.tree.ComparisonExpressionType;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.ExpressionTreeRewriter;
 import com.facebook.presto.sql.tree.InListExpression;
@@ -40,7 +40,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static com.facebook.presto.sql.ExpressionUtils.extractConjuncts;
-import static com.facebook.presto.sql.planner.DeterminismEvaluator.isDeterministic;
+import static com.facebook.presto.sql.planner.ExpressionDeterminismEvaluator.isDeterministic;
 import static com.facebook.presto.sql.planner.NullabilityAnalyzer.mayReturnNullOnNonNullInput;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Predicates.equalTo;
@@ -97,10 +97,10 @@ public class EqualityInference
      * given the known equalities. Returns null if unsuccessful.
      * This method checks if rewritten expression is non-deterministic.
      */
-    public Expression rewriteExpression(Expression expression, Predicate<Symbol> symbolScope)
+    public Expression rewriteExpression(Expression expression, Predicate<VariableReferenceExpression> variableScope, TypeProvider types)
     {
         checkArgument(isDeterministic(expression), "Only deterministic expressions may be considered for rewrite");
-        return rewriteExpression(expression, symbolScope, true);
+        return rewriteExpression(expression, variableScope, true, types);
     }
 
     /**
@@ -108,12 +108,12 @@ public class EqualityInference
      * given the known equalities. Returns null if unsuccessful.
      * This method allows rewriting non-deterministic expressions.
      */
-    public Expression rewriteExpressionAllowNonDeterministic(Expression expression, Predicate<Symbol> symbolScope)
+    public Expression rewriteExpressionAllowNonDeterministic(Expression expression, Predicate<VariableReferenceExpression> variableScope, TypeProvider types)
     {
-        return rewriteExpression(expression, symbolScope, true);
+        return rewriteExpression(expression, variableScope, true, types);
     }
 
-    private Expression rewriteExpression(Expression expression, Predicate<Symbol> symbolScope, boolean allowFullReplacement)
+    private Expression rewriteExpression(Expression expression, Predicate<VariableReferenceExpression> variableScope, boolean allowFullReplacement, TypeProvider types)
     {
         Iterable<Expression> subExpressions = SubExpressionExtractor.extract(expression);
         if (!allowFullReplacement) {
@@ -122,7 +122,7 @@ public class EqualityInference
 
         ImmutableMap.Builder<Expression, Expression> expressionRemap = ImmutableMap.builder();
         for (Expression subExpression : subExpressions) {
-            Expression canonical = getScopedCanonical(subExpression, symbolScope);
+            Expression canonical = getScopedCanonical(subExpression, variableScope, types);
             if (canonical != null) {
                 expressionRemap.put(subExpression, canonical);
             }
@@ -132,7 +132,7 @@ public class EqualityInference
         // larger subtrees over smaller subtrees
         // TODO: this rewrite can probably be made more sophisticated
         Expression rewritten = ExpressionTreeRewriter.rewriteWith(new ExpressionNodeInliner(expressionRemap.build()), expression);
-        if (!symbolToExpressionPredicate(symbolScope).apply(rewritten)) {
+        if (!variableToExpressionPredicate(variableScope, types).apply(rewritten)) {
             // If the rewritten is still not compliant with the symbol scope, just give up
             return null;
         }
@@ -140,7 +140,7 @@ public class EqualityInference
     }
 
     /**
-     * Dumps the inference equalities as equality expressions that are partitioned by the symbolScope.
+     * Dumps the inference equalities as equality expressions that are partitioned by the variableScope.
      * All stored equalities are returned in a compact set and will be classified into three groups as determined by the symbol scope:
      * <ol>
      * <li>equalities that fit entirely within the symbol scope</li>
@@ -167,7 +167,7 @@ public class EqualityInference
      *       d = f
      * </pre>
      */
-    public EqualityPartition generateEqualitiesPartitionedBy(Predicate<Symbol> symbolScope)
+    public EqualityPartition generateEqualitiesPartitionedBy(Predicate<VariableReferenceExpression> variableScope, TypeProvider types)
     {
         ImmutableSet.Builder<Expression> scopeEqualities = ImmutableSet.builder();
         ImmutableSet.Builder<Expression> scopeComplementEqualities = ImmutableSet.builder();
@@ -180,11 +180,11 @@ public class EqualityInference
 
             // Try to push each non-derived expression into one side of the scope
             for (Expression expression : filter(equalitySet, not(derivedExpressions::contains))) {
-                Expression scopeRewritten = rewriteExpression(expression, symbolScope, false);
+                Expression scopeRewritten = rewriteExpression(expression, variableScope, false, types);
                 if (scopeRewritten != null) {
                     scopeExpressions.add(scopeRewritten);
                 }
-                Expression scopeComplementRewritten = rewriteExpression(expression, not(symbolScope), false);
+                Expression scopeComplementRewritten = rewriteExpression(expression, not(variableScope), false, types);
                 if (scopeComplementRewritten != null) {
                     scopeComplementExpressions.add(scopeComplementRewritten);
                 }
@@ -196,13 +196,13 @@ public class EqualityInference
             Expression matchingCanonical = getCanonical(scopeExpressions);
             if (scopeExpressions.size() >= 2) {
                 for (Expression expression : filter(scopeExpressions, not(equalTo(matchingCanonical)))) {
-                    scopeEqualities.add(new ComparisonExpression(ComparisonExpressionType.EQUAL, matchingCanonical, expression));
+                    scopeEqualities.add(new ComparisonExpression(ComparisonExpression.Operator.EQUAL, matchingCanonical, expression));
                 }
             }
             Expression complementCanonical = getCanonical(scopeComplementExpressions);
             if (scopeComplementExpressions.size() >= 2) {
                 for (Expression expression : filter(scopeComplementExpressions, not(equalTo(complementCanonical)))) {
-                    scopeComplementEqualities.add(new ComparisonExpression(ComparisonExpressionType.EQUAL, complementCanonical, expression));
+                    scopeComplementEqualities.add(new ComparisonExpression(ComparisonExpression.Operator.EQUAL, complementCanonical, expression));
                 }
             }
 
@@ -215,7 +215,7 @@ public class EqualityInference
             Expression connectingCanonical = getCanonical(connectingExpressions);
             if (connectingCanonical != null) {
                 for (Expression expression : filter(connectingExpressions, not(equalTo(connectingCanonical)))) {
-                    scopeStraddlingEqualities.add(new ComparisonExpression(ComparisonExpressionType.EQUAL, connectingCanonical, expression));
+                    scopeStraddlingEqualities.add(new ComparisonExpression(ComparisonExpression.Operator.EQUAL, connectingCanonical, expression));
                 }
             }
         }
@@ -235,22 +235,22 @@ public class EqualityInference
     }
 
     /**
-     * Returns a canonical expression that is fully contained by the symbolScope and that is equivalent
+     * Returns a canonical expression that is fully contained by the variableScope and that is equivalent
      * to the specified expression. Returns null if unable to to find a canonical.
      */
     @VisibleForTesting
-    Expression getScopedCanonical(Expression expression, Predicate<Symbol> symbolScope)
+    Expression getScopedCanonical(Expression expression, Predicate<VariableReferenceExpression> variableScope, TypeProvider types)
     {
         Expression canonicalIndex = canonicalMap.get(expression);
         if (canonicalIndex == null) {
             return null;
         }
-        return getCanonical(filter(equalitySets.get(canonicalIndex), symbolToExpressionPredicate(symbolScope)));
+        return getCanonical(filter(equalitySets.get(canonicalIndex), variableToExpressionPredicate(variableScope, types)));
     }
 
-    private static Predicate<Expression> symbolToExpressionPredicate(final Predicate<Symbol> symbolScope)
+    private static Predicate<Expression> variableToExpressionPredicate(final Predicate<VariableReferenceExpression> variableScope, TypeProvider types)
     {
-        return expression -> Iterables.all(SymbolsExtractor.extractUnique(expression), symbolScope);
+        return expression -> Iterables.all(SymbolsExtractor.extractUniqueVariable(expression, types), variableScope);
     }
 
     /**
@@ -264,7 +264,7 @@ public class EqualityInference
                     isDeterministic(expression) &&
                     !mayReturnNullOnNonNullInput(expression)) {
                 ComparisonExpression comparison = (ComparisonExpression) expression;
-                if (comparison.getType() == ComparisonExpressionType.EQUAL) {
+                if (comparison.getOperator() == ComparisonExpression.Operator.EQUAL) {
                     // We should only consider equalities that have distinct left and right components
                     return !comparison.getLeft().equals(comparison.getRight());
                 }
@@ -283,7 +283,7 @@ public class EqualityInference
             if (inPredicate.getValueList() instanceof InListExpression) {
                 InListExpression valueList = (InListExpression) inPredicate.getValueList();
                 if (valueList.getValues().size() == 1) {
-                    return new ComparisonExpression(ComparisonExpressionType.EQUAL, inPredicate.getValue(), Iterables.getOnlyElement(valueList.getValues()));
+                    return new ComparisonExpression(ComparisonExpression.Operator.EQUAL, inPredicate.getValue(), Iterables.getOnlyElement(valueList.getValues()));
                 }
             }
         }

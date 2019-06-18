@@ -13,7 +13,6 @@
  */
 package com.facebook.presto.sql.planner.iterative.rule;
 
-import com.facebook.presto.spi.type.BigintType;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.SymbolAllocator;
@@ -28,6 +27,7 @@ import org.testng.annotations.Test;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.sql.planner.iterative.rule.LambdaCaptureDesugaringRewriter.rewrite;
 import static com.facebook.presto.sql.planner.iterative.rule.test.PlanBuilder.expression;
 import static java.util.stream.Collectors.toList;
@@ -38,17 +38,17 @@ public class TestLambdaCaptureDesugaringRewriter
     @Test
     public void testRewriteBasicLambda()
     {
-        final Map<Symbol, Type> symbols = ImmutableMap.of(new Symbol("a"), BigintType.BIGINT);
+        final Map<Symbol, Type> symbols = ImmutableMap.of(new Symbol("a"), BIGINT, new Symbol("x"), BIGINT);
         final SymbolAllocator allocator = new SymbolAllocator(symbols);
 
-        assertEquals(rewrite(expression("x -> a + x"), symbols, allocator),
-                     new BindExpression(
-                             ImmutableList.of(expression("a")),
-                             new LambdaExpression(
-                                     Stream.of("a_0", "x")
-                                             .map(Identifier::new)
-                                             .map(LambdaArgumentDeclaration::new)
-                                             .collect(toList()),
-                                     expression("a_0 + x"))));
+        assertEquals(rewrite(expression("x -> a + x"), allocator),
+                new BindExpression(
+                        ImmutableList.of(expression("a")),
+                        new LambdaExpression(
+                                Stream.of("a_0", "x")
+                                        .map(Identifier::new)
+                                        .map(LambdaArgumentDeclaration::new)
+                                        .collect(toList()),
+                                expression("a_0 + x"))));
     }
 }

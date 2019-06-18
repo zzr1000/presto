@@ -48,9 +48,12 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static com.facebook.presto.connector.thrift.util.ThriftExceptions.catchingThriftException;
 import static com.facebook.presto.connector.thrift.util.TupleDomainConversion.tupleDomainToThriftTupleDomain;
+import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.concurrent.MoreFutures.toCompletableFuture;
 import static java.util.Objects.requireNonNull;
 
@@ -68,7 +71,11 @@ public class ThriftSplitManager
     }
 
     @Override
-    public ConnectorSplitSource getSplits(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorTableLayoutHandle layout, SplitSchedulingStrategy splitSchedulingStrategy)
+    public ConnectorSplitSource getSplits(
+            ConnectorTransactionHandle transactionHandle,
+            ConnectorSession session,
+            ConnectorTableLayoutHandle layout,
+            SplitSchedulingContext splitSchedulingContext)
     {
         ThriftTableLayoutHandle layoutHandle = (ThriftTableLayoutHandle) layout;
         return new ThriftSplitSource(
@@ -124,6 +131,7 @@ public class ThriftSplitManager
         @Override
         public CompletableFuture<ConnectorSplitBatch> getNextBatch(ConnectorPartitionHandle partitionHandle, int maxSize)
         {
+            checkArgument(partitionHandle.equals(NOT_PARTITIONED), "partitionHandle must be NOT_PARTITIONED");
             checkState(future.get() == null || future.get().isDone(), "previous batch not completed");
             checkState(hasMoreData.get(), "this method cannot be invoked when there's no more data");
             PrestoThriftId currentToken = nextToken.get();
@@ -143,7 +151,7 @@ public class ThriftSplitManager
                         checkState(nextToken.compareAndSet(currentToken, batch.getNextToken()));
                         checkState(hasMoreData.compareAndSet(true, nextToken.get() != null));
                         return new ConnectorSplitBatch(splits, isFinished());
-                    });
+                    }, directExecutor());
             resultFuture = catchingThriftException(resultFuture);
             future.set(resultFuture);
             return toCompletableFuture(resultFuture);

@@ -17,16 +17,15 @@ import com.facebook.presto.Session;
 import com.facebook.presto.execution.Column;
 import com.facebook.presto.execution.Input;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.TableHandle;
-import com.facebook.presto.metadata.TableLayoutHandle;
 import com.facebook.presto.metadata.TableMetadata;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.TableScanNode;
 import com.facebook.presto.sql.planner.plan.IndexSourceNode;
-import com.facebook.presto.sql.planner.plan.PlanNode;
-import com.facebook.presto.sql.planner.plan.PlanVisitor;
-import com.facebook.presto.sql.planner.plan.TableScanNode;
+import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 
@@ -59,15 +58,15 @@ public class InputExtractor
         return new Column(columnMetadata.getName(), columnMetadata.getType().toString());
     }
 
-    private Input createInput(TableMetadata table, Optional<TableLayoutHandle> layout, Set<Column> columns)
+    private Input createInput(TableMetadata table, TableHandle tableHandle, Set<Column> columns)
     {
         SchemaTableName schemaTable = table.getTable();
-        Optional<Object> inputMetadata = layout.flatMap(tableLayout -> metadata.getInfo(session, tableLayout));
+        Optional<Object> inputMetadata = metadata.getInfo(session, tableHandle);
         return new Input(table.getConnectorId(), schemaTable.getSchemaName(), schemaTable.getTableName(), inputMetadata, ImmutableList.copyOf(columns));
     }
 
     private class Visitor
-            extends PlanVisitor<Void, Void>
+            extends InternalPlanVisitor<Void, Void>
     {
         private final ImmutableSet.Builder<Input> inputs = ImmutableSet.builder();
 
@@ -86,7 +85,7 @@ public class InputExtractor
                 columns.add(createColumn(metadata.getColumnMetadata(session, tableHandle, columnHandle)));
             }
 
-            inputs.add(createInput(metadata.getTableMetadata(session, tableHandle), node.getLayout(), columns));
+            inputs.add(createInput(metadata.getTableMetadata(session, tableHandle), tableHandle, columns));
 
             return null;
         }
@@ -101,13 +100,13 @@ public class InputExtractor
                 columns.add(createColumn(metadata.getColumnMetadata(session, tableHandle, columnHandle)));
             }
 
-            inputs.add(createInput(metadata.getTableMetadata(session, tableHandle), node.getLayout(), columns));
+            inputs.add(createInput(metadata.getTableMetadata(session, tableHandle), tableHandle, columns));
 
             return null;
         }
 
         @Override
-        protected Void visitPlan(PlanNode node, Void context)
+        public Void visitPlan(PlanNode node, Void context)
         {
             for (PlanNode child : node.getSources()) {
                 child.accept(this, context);

@@ -16,11 +16,12 @@ package com.facebook.presto.sql.planner.iterative;
 import com.facebook.presto.Session;
 import com.facebook.presto.cost.CostProvider;
 import com.facebook.presto.cost.StatsProvider;
+import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.matching.Captures;
 import com.facebook.presto.matching.Pattern;
-import com.facebook.presto.sql.planner.PlanNodeIdAllocator;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.sql.planner.SymbolAllocator;
-import com.facebook.presto.sql.planner.plan.PlanNode;
 
 import java.util.Optional;
 
@@ -53,6 +54,10 @@ public interface Rule<T>
         StatsProvider getStatsProvider();
 
         CostProvider getCostProvider();
+
+        void checkTimeoutNotExhausted();
+
+        WarningCollector getWarningCollector();
     }
 
     final class Result
